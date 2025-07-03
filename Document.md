@@ -1,180 +1,139 @@
-## 🧠 Regulatory Compliance Agentic Framework for Financial Institutions
+# AI-Powered Regulatory Impact System – Full Hackathon Reference
 
-### 🎯 Objective
+## 🎯 Project Objective
 
-Build a multi-agent system to analyze regulatory changes, extract obligations, assess impact across applications and teams, and track progress in a human-in-the-loop (HITL) compliant manner.
-
----
-
-### 🔁 Regulation Processing Flow Diagram
-
-![Regulatory Agent Flow Diagram](https://user-images.githubusercontent.com/placeholder/regulatory-agent-flow.png)
-
-> *(Diagram shows the sequential and branched relationship between each agent, highlighting HITL checkpoints.)*
+Develop a GenAI-powered system that starts from regulatory feeds and outputs structured, actionable impact analysis across divisions, services, and geographies. Designed for fast execution during a hackathon, it leverages prompting and modular tools.
 
 ---
 
-### 🔁 Regulation Processing Pipeline (Detailed)
+## 🧱 System Architecture (Micro-Tool Breakdown)
 
-1. **Regulation Ingestion Agent**
+### Phase 1: Ingestion & Structuring
 
-   * Parses PDF/text/email to extract metadata and regulation body.
-   * Input: Regulation document (e.g., PDF)
-   * Output:
-
-     ```json
-     {
-       "title": "CDCTCD-2025",
-       "effective_date": "2025-10-01",
-       "text": "...raw regulation content..."
-     }
-     ```
-   * HITL: ❌ Optional (manual correction if OCR fails)
-
-2. **Obligation Extraction Agent**
-
-   * Converts raw regulation into actionable obligations.
-   * Generates unique `task_id`s.
-   * Output:
-
-     ```json
-     [
-       { "id": "OB-1", "text": "Encrypt all customer data at rest" },
-       { "id": "OB-2", "text": "Obtain consent for cross-border transfers" }
-     ]
-     ```
-   * HITL: ✅ Required for review/edit
-
-3. **Impact Analysis Agent**
-
-   * Maps each obligation to affected applications and teams.
-   * Output:
-
-     ```json
-     {
-       "apps": ["ClientVault", "CRM360"],
-       "teams": ["Cloud Security", "Infrastructure"]
-     }
-     ```
-   * HITL: ✅ Confirmation required
-
-4. **Owner Assignment Agent**
-
-   * Resolves and assigns task owners from org chart.
-   * Output:
-
-     ```json
-     { "owner": "Ankit Jain" }
-     ```
-   * HITL: ✅ Optional override
-
-5. **Timeline Planning Agent**
-
-   * Suggests milestone timelines per obligation.
-   * Output:
-
-     ```json
-     {
-       "start_date": "2025-10-05",
-       "end_date": "2025-11-30",
-       "milestones": [
-         { "name": "Design", "duration": "2w" },
-         { "name": "Implementation", "duration": "4w" },
-         { "name": "Validation", "duration": "2w" }
-       ]
-     }
-     ```
-   * HITL: ✅ Edit milestones/dates
-
-6. **Execution Tracker Agent**
-
-   * Tracks progress from Jira/Slack systems.
-   * Output:
-
-     ```json
-     { "status": "in progress", "percent_complete": 60 }
-     ```
-   * HITL: ❌ Autonomous unless failure occurs
-
-7. **Escalation Detection Agent**
-
-   * Monitors overdue/missing updates; flags escalation.
-   * Output:
-
-     ```json
-     { "action": "escalate", "reason": "Task OB-2 overdue by 6 days" }
-     ```
-   * HITL: ✅ Escalation requires approval
-
-8. **Supervisor Agent**
-
-   * Provides oversight, querying, overrides.
-   * Output:
-
-     ```json
-     { "task_id": "OB-1", "status": "blocked" }
-     ```
-   * HITL: ✅ Human may pause/redirect flow
+| Tool                 | Purpose                                             | Input           |
+| -------------------- | --------------------------------------------------- | --------------- |
+| `PDFTextExtractor`   | Extract raw text from RGS+ PDFs or HTML feeds       | RGS+, PDF, HTML |
+| `WhitepaperEmbedder` | Embed whitepapers, SOPs, control docs for retrieval | Internal docs   |
+| `MarkdownFormatter`  | Structure regulation into clean markdown sections   | Raw text        |
 
 ---
 
-### 📚 Required Knowledge Sources
+### Phase 2: Enrichment (Prompt-Based)
 
-| Type                 | Source Example                    | Used By               |
-| -------------------- | --------------------------------- | --------------------- |
-| Regulation Docs      | FINMA\_CDCTCD-2025.pdf            | Ingestion, Extraction |
-| App Registry         | ClientVault → Security            | Impact Analysis       |
-| Team Mapping         | Cloud Security → Ankit Jain       | Owner Assignment      |
-| Org Chart            | LDAP, CSV, HR systems             | Owner Assignment      |
-| Historical Timelines | Past Jira projects, workload DB   | Timeline Planner      |
-| Escalation Rules     | `{ "Ankit": "Rina" }`             | Escalation Agent      |
-| Task Trackers        | Jira/Trello, Slack update monitor | Execution Tracker     |
-
----
-
-### ✅ HITL Matrix
-
-| Agent / Node          | Human in Loop? | Why Required                             |
-| --------------------- | -------------- | ---------------------------------------- |
-| Regulation Ingestion  | ❌ Optional     | Only if OCR/format issues                |
-| Obligation Extraction | ✅ Yes          | AI may miss/mis-split clauses            |
-| Impact Analysis       | ✅ Yes          | Domain context critical                  |
-| Owner Assignment      | ✅ Yes          | Organizational exceptions possible       |
-| Timeline Planning     | ✅ Yes          | Business calendar, priority input needed |
-| Execution Tracker     | ❌ No           | Agent syncs directly                     |
-| Escalation Detection  | ✅ Yes          | Sensitive to context                     |
-| Supervisor Agent      | ✅ Yes          | Manual override control                  |
+| Tool                    | Purpose                               | Output                  | Prompt?       |
+| ----------------------- | ------------------------------------- | ----------------------- | ------------- |
+| `ObligationExtractor`   | Extract "shall/must" sentences        | Clauses                 | ✅             |
+| `ThemeClassifier`       | Assign LRR themes/taxonomy            | e.g. "Model Risk"       | ✅             |
+| `RegionTagger`          | Detect jurisdictions (EU, APAC, etc.) | e.g. EU, US             | ✅             |
+| `DivisionMapper`        | Map obligation to division/service    | e.g. Risk Ops           | ✅ + Embedding |
+| `UrgencyScorer`         | Classify urgency from clause          | T+1, Future             | ✅             |
+| `ImpactLevelClassifier` | Rate criticality of impact            | High, Medium, Low       | ✅             |
+| `OwnerRoleSuggester`    | Suggest accountable function          | e.g. Head of Compliance | ✅             |
 
 ---
 
-### 🚀 Example Use Case
+### Phase 3: Visualization & Outputs
 
-**Input Regulation:**
-
-> "Encrypt all customer data at rest using NIST standards. Obtain explicit consent for all cross-border transfers."
-
-**Steps:**
-
-* Extracted:
-
-  * OB-1: Encrypt customer data
-  * OB-2: Consent management for transfers
-* Apps Affected:
-
-  * OB-1 → ClientVault, CRM360
-  * OB-2 → ConsentDB, WealthPortal
-* Owners:
-
-  * OB-1 → Ankit Jain
-  * OB-2 → Priya Mehta
-* Timelines:
-
-  * OB-1: Oct 5 – Nov 30
-  * OB-2: Oct 10 – Dec 15
-* Execution:
-
-  * OB-1 at 60%, OB-2 delayed → Escalation triggered
+| Tool                 | Purpose                                                |
+| -------------------- | ------------------------------------------------------ |
+| `HeatmapBuilder`     | Create impact matrix view across clauses vs. divisions |
+| `RoadmapTimeline`    | Show upcoming regulation deadlines on a timeline       |
+| `SummaryGenerator`   | Executive-level text summarization of regulation       |
+| `StructuredExporter` | Export final output as JSON / CSV                      |
 
 ---
 
-This document forms the architectural foundation for your regulatory compliance hackathon project.
+## 💡 Why Prompting is Best for Hackathon
+
+* ✅ No model training required
+* ✅ Fast iteration
+* ✅ Zero deployment complexity
+* ✅ Easy to tune outputs using prompt design
+
+---
+
+## 📌 Example Output JSON
+
+```json
+{
+  "clause": "Firms must submit liquidity risk reports daily to the regulator.",
+  "theme": "Market Risk",
+  "region": "EU",
+  "division": "Liquidity Risk",
+  "impact": "High",
+  "urgency": "T+1",
+  "owner": "Risk Control Head"
+}
+```
+
+---
+
+## 🧠 Prompt Example – Theme Classification
+
+**Instruction:**
+
+> Classify this regulation clause into one of the following themes: Market Risk, AI Risk, Cybersecurity, AML, Corporate Governance.
+
+**Input:**
+
+> "All firms using algorithmic models must document audit trails for 3 years."
+
+**Output:**
+
+> "AI Risk"
+
+---
+
+## 📊 Interactive Heatmap Input Fields
+
+* Clause
+* Theme
+* Division / Service
+* Impact level
+* Region
+* Status (Draft/Final)
+* Urgency (T+1 etc.)
+
+Used to build dashboards with filters across business units and jurisdictions.
+
+---
+
+## 🗂️ Folder Layout
+
+```
+reg-impact-ai/
+├── data/
+│   ├── rgs_clauses.csv
+│   ├── service_catalog.csv
+├── prompts/
+│   └── classify_theme.txt
+├── tools/
+│   ├── extract_clauses.py
+│   ├── classify_prompt.py
+│   ├── enrich_with_embeddings.py
+├── app/
+│   └── heatmap_dashboard.py
+```
+
+---
+
+## ✅ Summary
+
+| Area          | Tool/Approach                              |
+| ------------- | ------------------------------------------ |
+| Enrichment    | GPT-4o prompt-based classification         |
+| Mapping       | Embedding + similarity to internal catalog |
+| Visualization | Streamlit or Dash UI with filters          |
+| Export        | Structured JSON / CSV for downstream       |
+
+---
+
+## 🚀 Hackathon Execution Plan
+
+1. Parse regulation feeds (RGS+/PDF)
+2. Run prompt-based tools for enrichment
+3. Build interactive heatmap view (division x impact)
+4. Export final structured file
+5. (Optional) Link to whitepaper Q\&A via embeddings
+
+Let me know if you need prompt templates, dashboard code, or clause samples.
