@@ -1,43 +1,61 @@
-# run_graph.py
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from regulatory_analysis_graph import build_workflow
+import asyncio
 
-from central_mind_router import build_workflow
-from langgraph.checkpoint import FileCheckpointer
-import os
-
-# --- Simulated LLM wrapper ---
-class MockLLM:
+# Dummy LLM for testing – replace with real LLM object
+class DummyLLM:
     def invoke(self, prompt: str) -> str:
-        print(f"\n[LLM Prompt]\n{prompt}\n")
-        return "Mocked response based on prompt"
+        return f"[LLM] {prompt[:80]}..."
 
-# --- Setup ---
-checkpoint_dir = "./checkpoints"
-os.makedirs(checkpoint_dir, exist_ok=True)
-checkpointer = FileCheckpointer(checkpoint_dir)
+app = FastAPI()
 
-llm = MockLLM()
-app = build_workflow(llm, checkpointer=checkpointer)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# --- Sample Input ---
-initial_input = {
-    "raw_text": (
-        "The Financial Conduct Authority (FCA) requires all investment firms to submit their "
-        "annual financial crime report (REP-CRIM) within 60 business days of the firm's accounting reference date."
-    )
-}
+@app.websocket("/chat")
+async def chat_websocket(websocket: WebSocket):
+    await websocket.accept()
+    print("✅ WebSocket connected.")
 
-# --- Run ---
-print("\n==== Starting Regulatory Analysis ====")
-final_state = None
-for step in app.stream(initial_input):
-    node = list(step.keys())[0]
-    print(f"\n--- Node: {node} ---")
-    print(step[node])
-    final_state = step[node]
+    try:
+        while True:
+            request = await websocket.receive_json()
+            text = request.get("text")
 
-print("\n==== FINAL OUTPUT ====")
-print(f"Obligation: {final_state.get('obligation_sentence')}")
-print(f"Theme: {final_state.get('policy_theme')}")
-print(f"Owner: {final_state.get('responsible_party')}")
-print(f"Context: {final_state.get('external_context')}")
-print(f"Summary: {final_state.get('summary')}")
+            if not text:
+                await websocket.send_json({"agent": "System", "message": "❗ Empty text received."})
+                continue
+
+            await websocket.send_json({"agent": "System", "message": "🚀 Running graph..."})
+
+            graph = build_workflow(llm=DummyLLM(), websocket=websocket)
+
+            initial_state = {
+                "raw_text": text,
+                "scratchpad": {}
+            }
+
+            final = None
+            async for update in graph.astream(initial_state):
+                node = list(update.keys())[0]
+                payload = update[node]
+                final = payload
+                await websocket.send_json({
+                    "agent": node,
+                    "message": f"✅ Step: {node} complete.",
+                    "scratchpad": payload.get("scratchpad", {})
+                })
+
+            await websocket.send_json({
+                "agent": "Summary",
+                "message": final.get("summary", "⚠️ No summary generated.")
+            })
+
+    except WebSocketDisconnect:
+        print("❌ WebSocket disconnected.")
