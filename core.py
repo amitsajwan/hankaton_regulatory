@@ -20,93 +20,96 @@ class GraphState(TypedDict):
     scratchpad: dict
 
 # --- Tools (Nodes) ---
-def build_workflow(llm: Callable, checkpointer=None):
+def build_workflow(llm: Callable, checkpointer=None, websocket=None):
 
     def invoke_llm(prompt: str) -> str:
         return llm.invoke(prompt)
 
-    def add_message(state: GraphState, msg: str):
+    def send_intermediate_message(agent: str, msg: str):
+        print(f"[{agent}] {msg}")
+        if websocket:
+            import asyncio
+            asyncio.create_task(websocket.send_json({"agent": agent, "message": msg}))
+
+    def add_message(state: GraphState, agent: str, msg: str):
+        send_intermediate_message(agent, msg)
         scratchpad = state.get("scratchpad", {})
-        scratchpad.setdefault("intermediate_messages", []).append(msg)
+        scratchpad.setdefault("intermediate_messages", []).append({"agent": agent, "message": msg})
         return scratchpad
 
     def pdf_to_text_extractor(state: GraphState) -> GraphState:
-        msg = "--- PDF-to-Text Extractor ---"
-        print(msg)
-        scratchpad = add_message(state, msg)
+        agent = "PDF Extractor"
+        msg = "Extracting raw text from PDF..."
+        scratchpad = add_message(state, agent, msg)
         return {"raw_text": state["raw_text"], "scratchpad": scratchpad}
 
     def text_to_markdown_formatter(state: GraphState) -> GraphState:
-        msg = "--- Text-to-Markdown Formatter ---"
-        print(msg)
+        agent = "Markdown Formatter"
+        msg = "Formatting extracted text into markdown..."
         markdown = f"## Regulatory Requirement\n\n{state['raw_text']}"
-        scratchpad = add_message(state, msg)
+        scratchpad = add_message(state, agent, msg)
         return {"markdown_text": markdown, "scratchpad": scratchpad}
 
     def regulatory_term_identifier(state: GraphState) -> GraphState:
-        msg = "--- Regulatory Term Identifier ---"
-        print(msg)
+        agent = "Term Identifier"
+        msg = "Identifying key regulatory terms..."
         prompt = f"Identify all key regulatory entities, terms, codes, and dates from the following text:\n\n{state['raw_text']}"
         terms = invoke_llm(prompt)
-        scratchpad = add_message(state, f"Identified terms: {terms}")
+        scratchpad = add_message(state, agent, f"Identified terms: {terms}")
         return {"regulatory_terms": terms.split(", "), "scratchpad": scratchpad}
 
     def external_knowledge_retriever(state: GraphState) -> GraphState:
-        msg = "--- External Knowledge Retriever ---"
-        print(msg)
+        agent = "Knowledge Retriever"
         query = ", ".join(state["regulatory_terms"])
+        msg = f"Retrieving context for: {query}"
         prompt = f"Using internal whitepapers and knowledge base, retrieve relevant context for the following terms:\n{query}"
         context = invoke_llm(prompt)
-        scratchpad = add_message(state, f"Retrieved context: {context}")
+        scratchpad = add_message(state, agent, f"Context: {context}")
         return {"external_context": context, "scratchpad": scratchpad}
 
     def obligation_sentence_extractor(state: GraphState) -> GraphState:
-        msg = "--- Obligation Sentence Extractor ---"
-        print(msg)
+        agent = "Obligation Extractor"
         prompt = f"From the following text, extract the core obligation clause (look for 'must', 'shall', 'required'):\n{state['raw_text']}"
         obligation = invoke_llm(prompt)
-        scratchpad = add_message(state, f"Extracted obligation: {obligation}")
+        scratchpad = add_message(state, agent, f"Obligation: {obligation}")
         return {"obligation_sentence": obligation, "scratchpad": scratchpad}
 
     def policy_theme_classifier(state: GraphState) -> GraphState:
-        msg = "--- Policy Theme Classifier ---"
-        print(msg)
+        agent = "Theme Classifier"
         prompt = f"Classify the following obligation into a policy theme (e.g., AML, Cybersecurity, Operational Risk):\n{state['obligation_sentence']}"
         theme = invoke_llm(prompt)
-        scratchpad = add_message(state, f"Classified policy theme: {theme}")
+        scratchpad = add_message(state, agent, f"Theme: {theme}")
         return {"policy_theme": theme, "human_intervention_needed": True, "scratchpad": scratchpad}
 
     def responsible_party_locator(state: GraphState) -> GraphState:
-        msg = "--- Responsible Party Locator ---"
-        print(msg)
+        agent = "Responsible Party Locator"
         prompt = f"Who in an organization is typically responsible for the following obligation:\n{state['obligation_sentence']}"
         party = invoke_llm(prompt)
-        scratchpad = add_message(state, f"Located responsible party: {party}")
+        scratchpad = add_message(state, agent, f"Responsible Party: {party}")
         return {"responsible_party": party, "scratchpad": scratchpad}
 
     def obligation_owner_mapper(state: GraphState) -> GraphState:
-        msg = "--- Obligation-Owner Mapper ---"
-        print(msg)
-        scratchpad = add_message(state, msg)
+        agent = "Owner Mapper"
+        msg = "Mapping obligation to responsible owners..."
+        scratchpad = add_message(state, agent, msg)
         return {"scratchpad": scratchpad}
 
     def summarizer(state: GraphState) -> GraphState:
-        msg = "--- Summarizer ---"
-        print(msg)
+        agent = "Summarizer"
         prompt = f"Summarize this compliance requirement and its implications in 2 lines:\n\nRequirement: {state['obligation_sentence']}\nTheme: {state['policy_theme']}\nContext: {state['external_context']}"
         summary = invoke_llm(prompt)
-        scratchpad = add_message(state, f"Generated summary: {summary}")
+        scratchpad = add_message(state, agent, f"Summary: {summary}")
         return {"summary": summary, "scratchpad": scratchpad}
 
     def check_for_human_intervention(state: GraphState):
         return "human_intervention_node" if state.get("human_intervention_needed") else "continue"
 
     def human_intervention_node(state: GraphState):
-        print("--- HUMAN CHECK ---")
+        agent = "Human-in-the-Loop"
         current = state.get("policy_theme")
         user_input = input(f"LLM classified theme as '{current}'. Press ENTER to approve or type a new one: ").strip()
         new_theme = user_input if user_input else current
-        scratchpad = add_message(state, f"Final theme (after human check): {new_theme}")
+        scratchpad = add_message(state, agent, f"Theme confirmed: {new_theme}")
         return {"policy_theme": new_theme, "human_intervention_needed": False, "scratchpad": scratchpad}
 
     workflow = StateGraph(GraphState, checkpointer=checkpointer)
