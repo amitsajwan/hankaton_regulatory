@@ -52,6 +52,15 @@ async def chat_websocket(websocket: WebSocket):
                     "scratchpad": payload.get("scratchpad", {})
                 })
 
+                scratchpad_msgs = payload.get("scratchpad", {}).get("intermediate_messages", [])
+                if scratchpad_msgs:
+                    latest_msg = scratchpad_msgs[-1]
+                    await websocket.send_json({
+                        "agent": latest_msg["agent"],
+                        "message": latest_msg["message"]
+                    })
+
+
             await websocket.send_json({
                 "agent": "Summary",
                 "message": final.get("summary", "⚠️ No summary generated.")
