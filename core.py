@@ -1,12 +1,6 @@
-# regulatory_analysis_graph.py
-# pip install -U langgraph
-
-import os
-import json
 from typing import TypedDict, List, Callable
 from langgraph.graph import StateGraph, END
 
-# --- Define the State ---
 class GraphState(TypedDict):
     raw_text: str
     markdown_text: str
@@ -19,7 +13,6 @@ class GraphState(TypedDict):
     human_intervention_needed: bool
     scratchpad: dict
 
-# --- Tools (Nodes) ---
 def build_workflow(llm: Callable, checkpointer=None, websocket=None):
 
     def invoke_llm(prompt: str) -> str:
@@ -52,7 +45,6 @@ def build_workflow(llm: Callable, checkpointer=None, websocket=None):
 
     def regulatory_term_identifier(state: GraphState) -> GraphState:
         agent = "Term Identifier"
-        msg = "Identifying key regulatory terms..."
         prompt = f"Identify all key regulatory entities, terms, codes, and dates from the following text:\n\n{state['raw_text']}"
         terms = invoke_llm(prompt)
         scratchpad = add_message(state, agent, f"Identified terms: {terms}")
@@ -61,7 +53,6 @@ def build_workflow(llm: Callable, checkpointer=None, websocket=None):
     def external_knowledge_retriever(state: GraphState) -> GraphState:
         agent = "Knowledge Retriever"
         query = ", ".join(state["regulatory_terms"])
-        msg = f"Retrieving context for: {query}"
         prompt = f"Using internal whitepapers and knowledge base, retrieve relevant context for the following terms:\n{query}"
         context = invoke_llm(prompt)
         scratchpad = add_message(state, agent, f"Context: {context}")
