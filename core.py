@@ -1,6 +1,8 @@
 # regulatory_analysis_graph.py
 # pip install -U langgraph
 
+import os
+import json
 from typing import TypedDict, List, Callable
 from langgraph.graph import StateGraph, END
 
@@ -15,6 +17,7 @@ class GraphState(TypedDict):
     responsible_party: str
     summary: str
     human_intervention_needed: bool
+    scratchpad: dict
 
 # --- Tools (Nodes) ---
 def build_workflow(llm: Callable, checkpointer=None):
@@ -22,55 +25,78 @@ def build_workflow(llm: Callable, checkpointer=None):
     def invoke_llm(prompt: str) -> str:
         return llm.invoke(prompt)
 
+    def add_message(state: GraphState, msg: str):
+        scratchpad = state.get("scratchpad", {})
+        scratchpad.setdefault("intermediate_messages", []).append(msg)
+        return scratchpad
+
     def pdf_to_text_extractor(state: GraphState) -> GraphState:
-        print("--- PDF-to-Text Extractor ---")
-        return {"raw_text": state["raw_text"]}
+        msg = "--- PDF-to-Text Extractor ---"
+        print(msg)
+        scratchpad = add_message(state, msg)
+        return {"raw_text": state["raw_text"], "scratchpad": scratchpad}
 
     def text_to_markdown_formatter(state: GraphState) -> GraphState:
-        print("--- Text-to-Markdown Formatter ---")
+        msg = "--- Text-to-Markdown Formatter ---"
+        print(msg)
         markdown = f"## Regulatory Requirement\n\n{state['raw_text']}"
-        return {"markdown_text": markdown}
+        scratchpad = add_message(state, msg)
+        return {"markdown_text": markdown, "scratchpad": scratchpad}
 
     def regulatory_term_identifier(state: GraphState) -> GraphState:
-        print("--- Regulatory Term Identifier ---")
+        msg = "--- Regulatory Term Identifier ---"
+        print(msg)
         prompt = f"Identify all key regulatory entities, terms, codes, and dates from the following text:\n\n{state['raw_text']}"
         terms = invoke_llm(prompt)
-        return {"regulatory_terms": terms.split(", ")}
+        scratchpad = add_message(state, f"Identified terms: {terms}")
+        return {"regulatory_terms": terms.split(", "), "scratchpad": scratchpad}
 
     def external_knowledge_retriever(state: GraphState) -> GraphState:
-        print("--- External Knowledge Retriever ---")
+        msg = "--- External Knowledge Retriever ---"
+        print(msg)
         query = ", ".join(state["regulatory_terms"])
         prompt = f"Using internal whitepapers and knowledge base, retrieve relevant context for the following terms:\n{query}"
         context = invoke_llm(prompt)
-        return {"external_context": context}
+        scratchpad = add_message(state, f"Retrieved context: {context}")
+        return {"external_context": context, "scratchpad": scratchpad}
 
     def obligation_sentence_extractor(state: GraphState) -> GraphState:
-        print("--- Obligation Sentence Extractor ---")
+        msg = "--- Obligation Sentence Extractor ---"
+        print(msg)
         prompt = f"From the following text, extract the core obligation clause (look for 'must', 'shall', 'required'):\n{state['raw_text']}"
         obligation = invoke_llm(prompt)
-        return {"obligation_sentence": obligation}
+        scratchpad = add_message(state, f"Extracted obligation: {obligation}")
+        return {"obligation_sentence": obligation, "scratchpad": scratchpad}
 
     def policy_theme_classifier(state: GraphState) -> GraphState:
-        print("--- Policy Theme Classifier ---")
+        msg = "--- Policy Theme Classifier ---"
+        print(msg)
         prompt = f"Classify the following obligation into a policy theme (e.g., AML, Cybersecurity, Operational Risk):\n{state['obligation_sentence']}"
         theme = invoke_llm(prompt)
-        return {"policy_theme": theme, "human_intervention_needed": True}
+        scratchpad = add_message(state, f"Classified policy theme: {theme}")
+        return {"policy_theme": theme, "human_intervention_needed": True, "scratchpad": scratchpad}
 
     def responsible_party_locator(state: GraphState) -> GraphState:
-        print("--- Responsible Party Locator ---")
+        msg = "--- Responsible Party Locator ---"
+        print(msg)
         prompt = f"Who in an organization is typically responsible for the following obligation:\n{state['obligation_sentence']}"
         party = invoke_llm(prompt)
-        return {"responsible_party": party}
+        scratchpad = add_message(state, f"Located responsible party: {party}")
+        return {"responsible_party": party, "scratchpad": scratchpad}
 
     def obligation_owner_mapper(state: GraphState) -> GraphState:
-        print("--- Obligation-Owner Mapper ---")
-        return {}
+        msg = "--- Obligation-Owner Mapper ---"
+        print(msg)
+        scratchpad = add_message(state, msg)
+        return {"scratchpad": scratchpad}
 
     def summarizer(state: GraphState) -> GraphState:
-        print("--- Summarizer ---")
+        msg = "--- Summarizer ---"
+        print(msg)
         prompt = f"Summarize this compliance requirement and its implications in 2 lines:\n\nRequirement: {state['obligation_sentence']}\nTheme: {state['policy_theme']}\nContext: {state['external_context']}"
         summary = invoke_llm(prompt)
-        return {"summary": summary}
+        scratchpad = add_message(state, f"Generated summary: {summary}")
+        return {"summary": summary, "scratchpad": scratchpad}
 
     def check_for_human_intervention(state: GraphState):
         return "human_intervention_node" if state.get("human_intervention_needed") else "continue"
@@ -79,9 +105,9 @@ def build_workflow(llm: Callable, checkpointer=None):
         print("--- HUMAN CHECK ---")
         current = state.get("policy_theme")
         user_input = input(f"LLM classified theme as '{current}'. Press ENTER to approve or type a new one: ").strip()
-        if user_input:
-            return {"policy_theme": user_input, "human_intervention_needed": False}
-        return {"human_intervention_needed": False}
+        new_theme = user_input if user_input else current
+        scratchpad = add_message(state, f"Final theme (after human check): {new_theme}")
+        return {"policy_theme": new_theme, "human_intervention_needed": False, "scratchpad": scratchpad}
 
     workflow = StateGraph(GraphState, checkpointer=checkpointer)
     workflow.add_node("extractor", pdf_to_text_extractor)
