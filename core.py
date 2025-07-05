@@ -1,6 +1,6 @@
 import os
 import json
-from typing import TypedDict, List, Callable
+from typing import TypedDict, List, Callable, Awaitable
 from langgraph.graph import StateGraph, END
 
 class GraphState(TypedDict):
@@ -23,21 +23,18 @@ class GraphState(TypedDict):
     thoughts: List[dict]
     scratchpad: dict
 
-def build_workflow(llm: Callable, checkpointer=None, websocket=None):
+def build_workflow(llm: Callable[[str], Awaitable[str]], checkpointer=None, websocket=None):
 
-    def invoke_llm(prompt: str) -> str:
-        return llm.invoke(prompt)
-    
-import asyncio
-def send_intermediate_message(agent: str, msg: str):
-    print(f"[{agent}] {msg}")
-    if websocket:
-        loop = asyncio.get_event_loop()
-        loop.run_in_executor(None, lambda: asyncio.run(websocket.send_json({"agent": agent, "message": msg})))
+    async def invoke_llm(prompt: str) -> str:
+        return await llm.invoke(prompt)
 
+    async def send_intermediate_message(agent: str, msg: str):
+        print(f"[{agent}] {msg}")
+        if websocket:
+            await websocket.send_json({"agent": agent, "message": msg})
 
-    def add_message(state: GraphState, agent: str, msg: str):
-        send_intermediate_message(agent, msg)
+    async def add_message(state: GraphState, agent: str, msg: str):
+        await send_intermediate_message(agent, msg)
         scratchpad = state.get("scratchpad", {})
         scratchpad.setdefault("intermediate_messages", []).append({"agent": agent, "message": msg})
         state["thoughts"] = state.get("thoughts", []) + [{"agent": agent, "thought": msg}]
@@ -52,59 +49,59 @@ def send_intermediate_message(agent: str, msg: str):
         return decorator
 
     @register_tool("extract_terms")
-    def extract_terms(state: GraphState) -> str:
+    async def extract_terms(state: GraphState) -> str:
         prompt = f"Thought: Identify key terms.\nAction: extract_terms\nAction Input: {state['raw_text']}"
-        return invoke_llm(prompt)
+        return await invoke_llm(prompt)
 
     @register_tool("retrieve_context")
-    def retrieve_context(state: GraphState) -> str:
+    async def retrieve_context(state: GraphState) -> str:
         terms = ", ".join(state.get("regulatory_terms", []))
         prompt = f"Thought: Retrieve external context.\nAction: retrieve_context\nAction Input: {terms}"
-        return invoke_llm(prompt)
+        return await invoke_llm(prompt)
 
     @register_tool("extract_obligation")
-    def extract_obligation(state: GraphState) -> str:
+    async def extract_obligation(state: GraphState) -> str:
         prompt = f"Thought: Extract obligation from text.\nAction: extract_obligation\nAction Input: {state['raw_text']}"
-        return invoke_llm(prompt)
+        return await invoke_llm(prompt)
 
     @register_tool("classify_theme")
-    def classify_theme(state: GraphState) -> str:
+    async def classify_theme(state: GraphState) -> str:
         prompt = f"Thought: Classify the theme.\nAction: classify_theme\nAction Input: {state['obligation_sentence']}"
-        return invoke_llm(prompt)
+        return await invoke_llm(prompt)
 
     @register_tool("find_party")
-    def find_party(state: GraphState) -> str:
+    async def find_party(state: GraphState) -> str:
         prompt = f"Thought: Find responsible party.\nAction: find_party\nAction Input: {state['obligation_sentence']}"
-        return invoke_llm(prompt)
+        return await invoke_llm(prompt)
 
     @register_tool("summarize")
-    def summarize(state: GraphState) -> str:
+    async def summarize(state: GraphState) -> str:
         prompt = f"Thought: Summarize regulation.\nAction: summarize\nAction Input: {state['obligation_sentence']}, {state['policy_theme']}, {state['external_context']}"
-        return invoke_llm(prompt)
+        return await invoke_llm(prompt)
 
     @register_tool("division_function_identifier")
-    def division_function_identifier(state: GraphState) -> str:
+    async def division_function_identifier(state: GraphState) -> str:
         prompt = f"Thought: Identify relevant divisions or functions.\nAction: division_function_identifier\nAction Input: {state['obligation_sentence']}"
-        return invoke_llm(prompt)
+        return await invoke_llm(prompt)
 
     @register_tool("risk_scoring")
-    def risk_scoring(state: GraphState) -> str:
+    async def risk_scoring(state: GraphState) -> str:
         prompt = f"Thought: Score regulatory risk (e.g., High, Medium, Low).\nAction: risk_scoring\nAction Input: {state['obligation_sentence']}, {state['policy_theme']}"
-        return invoke_llm(prompt)
+        return await invoke_llm(prompt)
 
     @register_tool("qa_critic")
-    def qa_critic(state: GraphState) -> str:
+    async def qa_critic(state: GraphState) -> str:
         prompt = f"Thought: Perform QA review.\nAction: qa_critic\nAction Input: {json.dumps(state)}"
-        return invoke_llm(prompt)
+        return await invoke_llm(prompt)
 
-    def react_controller(state: GraphState) -> GraphState:
+    async def react_controller(state: GraphState) -> GraphState:
         max_steps = 12
         for _ in range(max_steps):
             if state.get("summary") and state.get("divisional_impact") and state.get("risk_score"):
                 break
             for name, func in tool_map.items():
-                output = func(state)
-                add_message(state, name, output)
+                output = await func(state)
+                await add_message(state, name, output)
                 if name == "extract_terms":
                     state["regulatory_terms"] = output.split(", ")
                 elif name == "retrieve_context":
