@@ -27,12 +27,14 @@ def build_workflow(llm: Callable, checkpointer=None, websocket=None):
 
     def invoke_llm(prompt: str) -> str:
         return llm.invoke(prompt)
+import asyncio
 
     def send_intermediate_message(agent: str, msg: str):
         print(f"[{agent}] {msg}")
         if websocket:
-            import asyncio
-            asyncio.create_task(websocket.send_json({"agent": agent, "message": msg}))
+            loop = asyncio.get_event_loop()
+            loop.run_in_executor(None, lambda: asyncio.run(websocket.send_json({"agent": agent, "message": msg})))
+
 
     def add_message(state: GraphState, agent: str, msg: str):
         send_intermediate_message(agent, msg)
