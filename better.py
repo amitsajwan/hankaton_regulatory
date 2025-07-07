@@ -1,4 +1,3 @@
-import os
 import json
 from typing import TypedDict, List, Callable
 from langgraph.graph import StateGraph, END
@@ -18,159 +17,199 @@ class GraphState(TypedDict):
     risk_score_reasoning: str
     summary: str
     qa_notes: str
-    user_query: str
-    user_query_result: str
     human_intervention_needed: bool
     scratchpad: List[dict]
-    thoughts: List[dict]
-
 
 def build_workflow(llm: Callable, checkpointer=None):
-    def call_llm(prompt: str):
-        response = llm.invoke(prompt).content
-        try:
-            parsed = json.loads(response)
-            return parsed.get("thought", ""), parsed.get("result", "")
-        except Exception:
-            return "", response
+    async def parse_react_response(agent: str, response: str):
+        thought, result = "", ""
+        for line in response.splitlines():
+            if line.startswith("Thought:"):
+                thought = line.replace("Thought:", "").strip()
+            elif line.startswith("Action Result:"):
+                result = line.replace("Action Result:", "").strip()
+        print(f"[{agent}] Thought: {thought}\n[{agent}] Action Result: {result}")
+        return thought, result
 
-    def log(agent: str, thought: str, result: str):
-        print(f"[{agent}]\nThought: {thought}\nResult: {result}\n")
+    async def update_state(state: GraphState, agent: str, response: str, update_fields: dict):
+        thought, result = await parse_react_response(agent, response)
+        new_scratch = {
+            "agent": agent,
+            "thought": thought,
+            "action_result": result
+        }
+        return {
+            **update_fields,
+            "scratchpad": state.get("scratchpad", []) + [new_scratch]
+        }
 
-    def update_state(state: GraphState, agent: str, thought: str, result: str, updates: dict):
-        log(agent, thought, result)
-        state["thoughts"] = state.get("thoughts", []) + [{"agent": agent, "thought": thought}]
-        state["scratchpad"] = state.get("scratchpad", []) + [{"agent": agent, "thought": thought, "action_result": result}]
-        return updates
+    async def extract_terms_node(state: GraphState):
+        prompt = f"""You are a compliance analyst AI using ReAct framework.
+Text: {state['raw_text']}
+Format:
+Thought: ...
+Action: extract_terms
+Action Result: ..."""
+        response = (await llm.invoke(prompt)).content
+        _, result = await parse_react_response("Term Identifier", response)
+        return await update_state(state, "Term Identifier", response, {
+            "regulatory_terms": [t.strip() for t in result.split(',') if t.strip()]
+        })
 
-    def extract_terms(state: GraphState):
-        prompt = f"""
-        You are a regulatory parser. Extract key regulatory terms from this text.
-        Return as JSON: {{"thought": ..., "result": "term1, term2"}}
-        Text: {state['raw_text']}
-        """
-        thought, result = call_llm(prompt)
-        return update_state(state, "Term Identifier", thought, result, {"regulatory_terms": [t.strip() for t in result.split(",")]})
-
-    def retrieve_context(state: GraphState):
+    async def retrieve_context_node(state: GraphState):
         terms = ", ".join(state.get("regulatory_terms", []))
-        prompt = f"""
-        Based on these terms: {terms}, return contextual explanation.
-        Return JSON: {{"thought": ..., "result": ...}}
-        """
-        thought, result = call_llm(prompt)
-        return update_state(state, "Context Retriever", thought, result, {"external_context": result})
+        prompt = f"""You are a compliance AI. Based on the key terms '{terms}', provide external context.
+Format:
+Thought: ...
+Action: retrieve_context
+Action Result: ..."""
+        response = (await llm.invoke(prompt)).content
+        _, result = await parse_react_response("Context Retriever", response)
+        return await update_state(state, "Context Retriever", response, {
+            "external_context": result
+        })
 
-    def extract_obligation(state: GraphState):
-        prompt = f"""
-        Extract core obligation sentence from:
-        {state['raw_text']}
-        Return JSON: {{"thought": ..., "result": ...}}
-        """
-        thought, result = call_llm(prompt)
-        return update_state(state, "Obligation Extractor", thought, result, {"obligation_sentence": result})
+    async def extract_obligation_node(state: GraphState):
+        prompt = f"""Extract the main obligation sentence.
+Text: {state['raw_text']}
+Format:
+Thought: ...
+Action: extract_obligation
+Action Result: ..."""
+        response = (await llm.invoke(prompt)).content
+        _, result = await parse_react_response("Obligation Extractor", response)
+        return await update_state(state, "Obligation Extractor", response, {
+            "obligation_sentence": result
+        })
 
-    def classify_theme(state: GraphState):
-        prompt = f"""
-        Classify this obligation into a theme and provide reasoning.
-        Obligation: {state['obligation_sentence']}
-        Return JSON: {{"thought": ..., "result": {{"theme": ..., "reasoning": ...}}}}
-        """
-        thought, result = call_llm(prompt)
-        theme, reasoning = result.get("theme"), result.get("reasoning")
-        return update_state(state, "Theme Classifier", thought, json.dumps(result), {"policy_theme": theme, "policy_theme_reasoning": reasoning, "human_intervention_needed": True})
+    async def classify_theme_node(state: GraphState):
+        prompt = f"""Classify the obligation below into a theme. Return JSON with 'theme' and 'reasoning'.
+Obligation: {state['obligation_sentence']}
+Format:
+Thought: ...
+Action: classify_theme
+Action Result: {{ "theme": ..., "reasoning": ... }}"""
+        response = (await llm.invoke(prompt)).content
+        _, result = await parse_react_response("Theme Classifier", response)
+        parsed = json.loads(result)
+        return await update_state(state, "Theme Classifier", response, {
+            "policy_theme": parsed.get("theme"),
+            "policy_theme_reasoning": parsed.get("reasoning"),
+            "human_intervention_needed": True
+        })
 
-    def find_party(state: GraphState):
-        prompt = f"""
-        Who is responsible for this obligation? Provide party and reasoning.
-        Obligation: {state['obligation_sentence']}
-        Return JSON: {{"thought": ..., "result": {{"party": ..., "reasoning": ...}}}}
-        """
-        thought, result = call_llm(prompt)
-        return update_state(state, "Party Locator", thought, json.dumps(result), {"responsible_party": result.get("party"), "responsible_party_reasoning": result.get("reasoning")})
+    async def find_party_node(state: GraphState):
+        prompt = f"""Who is responsible for this obligation? Return JSON with 'party' and 'reasoning'.
+Obligation: {state['obligation_sentence']}
+Format:
+Thought: ...
+Action: find_party
+Action Result: {{ "party": ..., "reasoning": ... }}"""
+        response = (await llm.invoke(prompt)).content
+        _, result = await parse_react_response("Party Locator", response)
+        parsed = json.loads(result)
+        return await update_state(state, "Party Locator", response, {
+            "responsible_party": parsed.get("party"),
+            "responsible_party_reasoning": parsed.get("reasoning")
+        })
 
-    def division_impact(state: GraphState):
-        prompt = f"""
-        Which business divisions are impacted by this?
-        Obligation: {state['obligation_sentence']}
-        Return JSON: {{"thought": ..., "result": {{"divisions": ..., "reasoning": ...}}}}
-        """
-        thought, result = call_llm(prompt)
-        return update_state(state, "Division Identifier", thought, json.dumps(result), {"divisional_impact": result.get("divisions"), "divisional_impact_reasoning": result.get("reasoning")})
+    async def identify_division_node(state: GraphState):
+        prompt = f"""Identify business divisions affected by the obligation.
+Obligation: {state['obligation_sentence']}
+Format:
+Thought: ...
+Action: identify_division
+Action Result: {{ "divisions": ..., "reasoning": ... }}"""
+        response = (await llm.invoke(prompt)).content
+        _, result = await parse_react_response("Division Identifier", response)
+        parsed = json.loads(result)
+        return await update_state(state, "Division Identifier", response, {
+            "divisional_impact": parsed.get("divisions"),
+            "divisional_impact_reasoning": parsed.get("reasoning")
+        })
 
-    def risk_score(state: GraphState):
-        prompt = f"""
-        What is the risk score (High/Medium/Low) and why?
-        Obligation: {state['obligation_sentence']}
-        Theme: {state['policy_theme']}
-        Return JSON: {{"thought": ..., "result": {{"score": ..., "reasoning": ...}}}}
-        """
-        thought, result = call_llm(prompt)
-        return update_state(state, "Risk Scorer", thought, json.dumps(result), {"risk_score": result.get("score"), "risk_score_reasoning": result.get("reasoning")})
+    async def score_risk_node(state: GraphState):
+        prompt = f"""Assess compliance risk. Return JSON with 'score' and 'reasoning'.
+Obligation: {state['obligation_sentence']}
+Theme: {state['policy_theme']}
+Format:
+Thought: ...
+Action: score_risk
+Action Result: {{ "score": ..., "reasoning": ... }}"""
+        response = (await llm.invoke(prompt)).content
+        _, result = await parse_react_response("Risk Scorer", response)
+        parsed = json.loads(result)
+        return await update_state(state, "Risk Scorer", response, {
+            "risk_score": parsed.get("score"),
+            "risk_score_reasoning": parsed.get("reasoning")
+        })
 
-    def summarize(state: GraphState):
-        prompt = f"""
-        Provide a final summary in 1-2 lines.
-        Return JSON: {{"thought": ..., "result": ...}}
-        """
-        thought, result = call_llm(prompt)
-        return update_state(state, "Summarizer", thought, result, {"summary": result})
+    async def summarize_node(state: GraphState):
+        data = {k: v for k, v in state.items() if k not in ['scratchpad', 'raw_text', 'human_intervention_needed']}
+        prompt = f"""Summarize this analysis:
+{json.dumps(data, indent=2)}
+Format:
+Thought: ...
+Action: summarize
+Action Result: ..."""
+        response = (await llm.invoke(prompt)).content
+        _, result = await parse_react_response("Summarizer", response)
+        return await update_state(state, "Summarizer", response, {
+            "summary": result
+        })
 
-    def qa_critic(state: GraphState):
-        data = {k: v for k, v in state.items() if k not in ["scratchpad", "thoughts"]}
-        prompt = f"""
-        Review this regulatory analysis for errors or inconsistencies.
-        Return JSON: {{"thought": ..., "result": ...}}
-        Data: {json.dumps(data)}
-        """
-        thought, result = call_llm(prompt)
-        return update_state(state, "QA Critic", thought, result, {"qa_notes": result})
+    async def qa_critic_node(state: GraphState):
+        data = {k: v for k, v in state.items() if k != "scratchpad"}
+        prompt = f"""You are a QA critic. Review the analysis for consistency.
+Analysis:
+{json.dumps(data, indent=2)}
+Format:
+Thought: ...
+Action: qa_review
+Action Result: ..."""
+        response = (await llm.invoke(prompt)).content
+        _, result = await parse_react_response("QA Critic", response)
+        return await update_state(state, "QA Critic", response, {
+            "qa_notes": result
+        })
 
-    def user_query_tool(state: GraphState):
-        prompt = f"""
-        You are reviewing the current regulatory analysis state.
-        A user has asked: "{state.get('user_query')}"
-        Think through the data and either update the state or respond.
-        Return JSON: {{"thought": ..., "result": ...}}
-        State: {json.dumps({k: v for k, v in state.items() if k not in ['scratchpad', 'thoughts']})}
-        """
-        thought, result = call_llm(prompt)
-        return update_state(state, "User Intent Handler", thought, result, {"user_query_result": result})
+    def check_for_human_intervention(state: GraphState):
+        return "human_intervention_node" if state.get("human_intervention_needed") else "continue"
 
-    def check_for_human(state):
-        return "human_intervention" if state.get("human_intervention_needed") else "continue"
+    async def human_intervention_node(state: GraphState):
+        current = state.get("policy_theme")
+        print("\nHUMAN CHECKPOINT: Theme classified as:", current)
+        override = input("Press ENTER to approve, or enter new theme: ").strip()
+        return {
+            "policy_theme": override if override else current,
+            "human_intervention_needed": False
+        }
 
-    def human_intervention(state):
-        print(f"\nHuman check: LLM classified theme as {state['policy_theme']}")
-        new_theme = input("Override theme (or ENTER to approve): ").strip()
-        if new_theme:
-            return {"policy_theme": new_theme, "human_intervention_needed": False}
-        return {"human_intervention_needed": False}
+    workflow = StateGraph(GraphState)
+    workflow.add_node("extract_terms", extract_terms_node)
+    workflow.add_node("retrieve_context", retrieve_context_node)
+    workflow.add_node("extract_obligation", extract_obligation_node)
+    workflow.add_node("classify_theme", classify_theme_node)
+    workflow.add_node("human_intervention_node", human_intervention_node)
+    workflow.add_node("find_party", find_party_node)
+    workflow.add_node("identify_division", identify_division_node)
+    workflow.add_node("score_risk", score_risk_node)
+    workflow.add_node("summarize", summarize_node)
+    workflow.add_node("qa_critic", qa_critic_node)
 
-    g = StateGraph(GraphState, checkpointer=checkpointer)
-    g.add_node("extract_terms", extract_terms)
-    g.add_node("retrieve_context", retrieve_context)
-    g.add_node("extract_obligation", extract_obligation)
-    g.add_node("classify_theme", classify_theme)
-    g.add_node("human_intervention", human_intervention)
-    g.add_node("find_party", find_party)
-    g.add_node("division_impact", division_impact)
-    g.add_node("risk_score", risk_score)
-    g.add_node("summarize", summarize)
-    g.add_node("qa_critic", qa_critic)
-    g.add_node("user_query_tool", user_query_tool)
+    workflow.set_entry_point("extract_terms")
+    workflow.add_edge("extract_terms", "retrieve_context")
+    workflow.add_edge("retrieve_context", "extract_obligation")
+    workflow.add_edge("extract_obligation", "classify_theme")
+    workflow.add_conditional_edges("classify_theme", check_for_human_intervention, {
+        "human_intervention_node": "human_intervention_node",
+        "continue": "find_party"
+    })
+    workflow.add_edge("human_intervention_node", "find_party")
+    workflow.add_edge("find_party", "identify_division")
+    workflow.add_edge("identify_division", "score_risk")
+    workflow.add_edge("score_risk", "summarize")
+    workflow.add_edge("summarize", "qa_critic")
+    workflow.add_edge("qa_critic", END)
 
-    g.set_entry_point("extract_terms")
-    g.add_edge("extract_terms", "retrieve_context")
-    g.add_edge("retrieve_context", "extract_obligation")
-    g.add_edge("extract_obligation", "classify_theme")
-    g.add_conditional_edges("classify_theme", check_for_human, {"human_intervention": "human_intervention", "continue": "find_party"})
-    g.add_edge("human_intervention", "find_party")
-    g.add_edge("find_party", "division_impact")
-    g.add_edge("division_impact", "risk_score")
-    g.add_edge("risk_score", "summarize")
-    g.add_edge("summarize", "qa_critic")
-    g.add_edge("qa_critic", "user_query_tool")
-    g.add_edge("user_query_tool", END)
-
-    return g.compile()
+    return workflow.compile(checkpointer=checkpointer)
