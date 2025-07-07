@@ -43,16 +43,31 @@ def build_workflow(llm: Callable, checkpointer=None):
             "scratchpad": state.get("scratchpad", []) + [new_scratch]
         }
 
-    async def extract_terms_node(state: GraphState):
-        prompt = f"""You are a compliance analyst AI using ReAct framework.
-Text: {state['raw_text']}
-Format:
-Thought: ...
-Action: extract_terms
-Action Result: ..."""
-        response = (await llm.invoke(prompt)).content
-        _, result = await parse_react_response("Term Identifier", response)
-        return await update_state(state, "Term Identifier", response, {
+    async def extract_terms_node(state: GraphState) -> dict:
+        agent = "Term Identifier"
+        
+        # Step 1: Retrieve text from indexed corpus (e.g., via vector search or document store)
+        query = state.get("raw_text")  # using raw_text as query input
+        retrieved_chunk = await doc_index.search(query)  # <- async retrieval tool
+        relevant_text = retrieved_chunk['content']
+        
+        # Step 2: Ask LLM to extract key terms from that content
+        prompt = f"""
+    You are a compliance analyst AI using ReAct framework.
+    Text: {relevant_text}
+    
+    Think step-by-step about how to extract key regulatory terms, names, and acronyms.
+    Then output your Thought, Action, and Action Result.
+    
+    Format:
+    Thought: ...
+    Action: extract_terms
+    Action Result: ...
+    """
+        response = await llm.ainvoke(prompt)
+        thought, result = parse_react_response(agent, response.content)
+        
+        return update_state(state, agent, response.content, {
             "regulatory_terms": [t.strip() for t in result.split(',') if t.strip()]
         })
 
