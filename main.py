@@ -1,70 +1,56 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from regulatory_analysis_graph import build_workflow
+from fastapi import FastAPI, WebSocket
+from regulatory_graph import build_workflow, GraphState
+from langchain_core.language_models import BaseChatModel
+from typing import Dict, Any
 import asyncio
-
-# Dummy LLM for testing – replace with real LLM object
-class DummyLLM:
-    def invoke(self, prompt: str) -> str:
-        return f"[LLM] {prompt[:80]}..."
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Dummy LLM with `invoke()` method (replace with real one)
+class DummyLLM(BaseChatModel):
+    def _call(self, messages, **kwargs):
+        return "Dummy response"
+
+    @property
+    def _llm_type(self) -> str:
+        return "dummy"
+
+    def invoke(self, prompt: str) -> str:
+        print(f"[LLM RECEIVED PROMPT]\n{prompt}\n")
+        return "{\"result\": \"Sample output\", \"reasoning\": \"Mock reasoning from model.\"}"
+
+llm = DummyLLM()
+workflow = build_workflow(llm)
 
 @app.websocket("/chat")
-async def chat_websocket(websocket: WebSocket):
+async def chat(websocket: WebSocket):
     await websocket.accept()
-    print("✅ WebSocket connected.")
+    data: Dict[str, Any] = await websocket.receive_json()
 
-    try:
-        while True:
-            request = await websocket.receive_json()
-            text = request.get("text")
+    if "raw_text" not in data:
+        await websocket.send_json({"error": "Missing 'raw_text' in request."})
+        return
 
-            if not text:
-                await websocket.send_json({"agent": "System", "message": "❗ Empty text received."})
-                continue
+    initial_state: GraphState = {
+        "raw_text": data["raw_text"],
+        "regulatory_terms": [],
+        "external_context": "",
+        "obligation_sentence": "",
+        "policy_theme": "",
+        "policy_theme_reasoning": "",
+        "responsible_party": "",
+        "responsible_party_reasoning": "",
+        "divisional_impact": "",
+        "divisional_impact_reasoning": "",
+        "risk_score": "",
+        "risk_score_reasoning": "",
+        "summary": "",
+        "qa_notes": "",
+        "human_intervention_needed": False,
+        "scratchpad": []
+    }
 
-            await websocket.send_json({"agent": "System", "message": "🚀 Running graph..."})
+    async for state in workflow.astream(initial_state):
+        await websocket.send_json({"state": {k: v for k, v in state.items() if k != "scratchpad"}})
 
-            graph = build_workflow(llm=DummyLLM(), websocket=websocket)
-
-            initial_state = {
-                "raw_text": text,
-                "scratchpad": {}
-            }
-
-            final = None
-            async for update in graph.astream(initial_state):
-                node = list(update.keys())[0]
-                payload = update[node]
-                final = payload
-                await websocket.send_json({
-                    "agent": node,
-                    "message": f"✅ Step: {node} complete.",
-                    "scratchpad": payload.get("scratchpad", {})
-                })
-
-                scratchpad_msgs = payload.get("scratchpad", {}).get("intermediate_messages", [])
-                if scratchpad_msgs:
-                    latest_msg = scratchpad_msgs[-1]
-                    await websocket.send_json({
-                        "agent": latest_msg["agent"],
-                        "message": latest_msg["message"]
-                    })
-
-
-            await websocket.send_json({
-                "agent": "Summary",
-                "message": final.get("summary", "⚠️ No summary generated.")
-            })
-
-    except WebSocketDisconnect:
-        print("❌ WebSocket disconnected.")
+    await websocket.send_json({"done": True})
