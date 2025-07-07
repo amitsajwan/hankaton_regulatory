@@ -1,56 +1,29 @@
+import os
+import json
 from fastapi import FastAPI, WebSocket
-from regulatory_graph import build_workflow, GraphState
-from langchain_core.language_models import BaseChatModel
-from typing import Dict, Any
-import asyncio
+from langgraph.graph import StateGraph
+from regulatory_graph import build_workflow
+
+class DummyLLM:
+    def invoke(self, prompt: str):
+        return type("Result", (), {"content": f"Dummy result for: {prompt[:50]}..."})()
 
 app = FastAPI()
 
-# Dummy LLM with `invoke()` method (replace with real one)
-class DummyLLM(BaseChatModel):
-    def _call(self, messages, **kwargs):
-        return "Dummy response"
-
-    @property
-    def _llm_type(self) -> str:
-        return "dummy"
-
-    def invoke(self, prompt: str) -> str:
-        print(f"[LLM RECEIVED PROMPT]\n{prompt}\n")
-        return "{\"result\": \"Sample output\", \"reasoning\": \"Mock reasoning from model.\"}"
-
-llm = DummyLLM()
-workflow = build_workflow(llm)
-
 @app.websocket("/chat")
-async def chat(websocket: WebSocket):
+async def chat_endpoint(websocket: WebSocket):
     await websocket.accept()
-    data: Dict[str, Any] = await websocket.receive_json()
+    try:
+        llm = DummyLLM()
+        workflow = build_workflow(llm, websocket=websocket)
 
-    if "raw_text" not in data:
-        await websocket.send_json({"error": "Missing 'raw_text' in request."})
-        return
+        input_state = await websocket.receive_json()
+        input_state.setdefault("scratchpad", [])
 
-    initial_state: GraphState = {
-        "raw_text": data["raw_text"],
-        "regulatory_terms": [],
-        "external_context": "",
-        "obligation_sentence": "",
-        "policy_theme": "",
-        "policy_theme_reasoning": "",
-        "responsible_party": "",
-        "responsible_party_reasoning": "",
-        "divisional_impact": "",
-        "divisional_impact_reasoning": "",
-        "risk_score": "",
-        "risk_score_reasoning": "",
-        "summary": "",
-        "qa_notes": "",
-        "human_intervention_needed": False,
-        "scratchpad": []
-    }
+        async for state in workflow.astream(input_state, stream_mode="values"):
+            await websocket.send_json({"final_state": {k: v for k, v in state.items() if k != "scratchpad"}})
 
-    async for state in workflow.astream(initial_state):
-        await websocket.send_json({"state": {k: v for k, v in state.items() if k != "scratchpad"}})
-
-    await websocket.send_json({"done": True})
+    except Exception as e:
+        await websocket.send_json({"error": str(e)})
+    finally:
+        await websocket.close()
